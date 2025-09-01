@@ -1,4 +1,10 @@
-#Layerwise bit-width allocation via Optimal Transport (Sinkhorn) algorithm
+# -*- coding: utf-8 -*-
+"""
+Layerwise bit-width allocation via Optimal Transport (Sinkhorn) instead of Fisher-based HAWQ-V2.
+Author: you
+Req: torch>=1.12
+"""
+
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Iterable, Optional
 import math
@@ -6,7 +12,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# -------------------------------
 # Utilities: collect target layers
+# -------------------------------
+
 def iter_quant_layers(model: nn.Module) -> Iterable[Tuple[str, nn.Module]]:
     """Conv2d / Linear を量子化対象として列挙（必要に応じて拡張）"""
     for name, m in model.named_modules():
@@ -116,7 +125,7 @@ def maxent_bit_distribution(bits: List[int], target_avg: float) -> List[float]:
 
 def target_bit_counts(num_layers: int, bits: List[int], avg_bits: float) -> List[int]:
     """
-    目標平均ビットを満たす最大エントロピー分布から整数個数を配分（最大剰余方式）
+    目標平均ビットを満たす最大エントロピー分布から整数個数を配分（Hare–Niemeyer）。
     """
     q = maxent_bit_distribution(bits, avg_bits)  # sum=1
     raw = [num_layers * qi for qi in q]
@@ -127,6 +136,10 @@ def target_bit_counts(num_layers: int, bits: List[int], avg_bits: float) -> List
     for i in range(r):
         base[frac[i][0]] += 1
     return base  # sum == num_layers
+
+# ----------------------------------------
+# Sinkhorn (log-domain stabilized)
+# ----------------------------------------
 
 def sinkhorn_transport(
     cost: torch.Tensor,  # [n_layers, n_bits]
@@ -156,7 +169,8 @@ def sinkhorn_transport(
         g = log_b - logsumexp((K + f.unsqueeze(1)).transpose(0,1), dim=1)  # col scaling
 
     P = torch.exp(K + f.unsqueeze(1) + g.unsqueeze(0))  # [L, B]
-    P = P / (P.sum() + 1e-40) #微修正
+    # 正規化のズレを軽く修正
+    P = P / (P.sum() + 1e-40)
     return P
 
 # ----------------------------------------
@@ -202,6 +216,7 @@ def greedy_rounding(P: torch.Tensor, target_counts: List[int]) -> List[int]:
 # ----------------------------------------
 # Quantization (weights per-tensor symmetric uniform)
 # ----------------------------------------
+
 def quantize_weight_per_tensor_symmetric(w: torch.Tensor, bits: int) -> torch.Tensor:
     if bits >= 32:
         return w.clone()
@@ -283,8 +298,11 @@ class OTQuantResult:
 
 def build_cost_matrix(
     sens: Dict[str, float],
-    layer_names: List[str],  layer_sizes: List[int],  bits: List[int],
-    device: torch.device,) -> torch.Tensor:
+    layer_names: List[str],
+    layer_sizes: List[int],
+    bits: List[int],
+    device: torch.device,
+) -> torch.Tensor:
     """
     C[i,b] = n_i * s_i * error(b) で構築。
     error(b) は量子化雑音の簡易 proxy として 2^{-2b} を使用。
@@ -302,9 +320,12 @@ def ot_allocate_bits_for_model(
     dataloader,
     loss_fn,
     device: torch.device,
-    config: OTQuantConfig = OTQuantConfig(),) -> OTQuantResult:
+    config: OTQuantConfig = OTQuantConfig(),
+) -> OTQuantResult:
     # 1) 感度推定
-    sens = layer_sensitivity_empirical_fisher( model, dataloader, loss_fn, device, num_batches=config.sens_batches )
+    sens = layer_sensitivity_empirical_fisher(
+        model, dataloader, loss_fn, device, num_batches=config.sens_batches
+    )
 
     # 2) レイヤ情報
     layer_names: List[str] = []
@@ -338,40 +359,44 @@ def ot_allocate_bits_for_model(
         cost_matrix=C.detach().cpu()
     )
 
-# 例: CIFAR-10 + ResNet18
+# ----------------------------------------
+# Example usage (skeleton)
+# ----------------------------------------
+
 if __name__ == "__main__":
-    import argparse
-    #import model
+    # 例: CIFAR-10 + ResNet18 での使用（ダミー最小例）
+    # 実際には DataLoader/モデル定義をあなたの環境に合わせて差し替えてください。
+    try:
+        from torchvision import datasets, transforms, models
+        from torch.utils.data import DataLoader
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    restore_weights_from_backup=False
+        # データ（1バッチだけ使う簡易校正）
+        tfm = transforms.Compose([transforms.Resize(224), transforms.ToTensor()])
+        ds = datasets.FakeData(size=64, image_size=(3,224,224), num_classes=10, transform=tfm)
+        dl = DataLoader(ds, batch_size=16, shuffle=False)
 
-    from torchvision import datasets, transforms, models
-    from torch.utils.data import DataLoader
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # モデル
+        model = models.resnet18(num_classes=10).to(device)
+        loss_fn = nn.CrossEntropyLoss()
 
-    # データ（1バッチだけ使う簡易校正）
-    tfm = transforms.Compose([transforms.Resize(224), transforms.ToTensor()])
-    ds = datasets.FakeData(size=64, image_size=(3,224,224), num_classes=10, transform=tfm)
-    dl = DataLoader(ds, batch_size=16, shuffle=False)
+        # OT によるビット配分
+        cfg = OTQuantConfig(bits=[2,4,6,8], avg_bits=6.0, epsilon=0.02, sinkhorn_iters=400, sens_batches=1)
+        result = ot_allocate_bits_for_model(model, dl, loss_fn, device, cfg)
 
-    # モデル
-    model = models.resnet18(num_classes=10).to(device)
-    loss_fn = nn.CrossEntropyLoss()
+        # 量子化を適用
+        backup = apply_weight_quantization_inplace(
+            model, result.assignment, cfg.bits, keep_original=True
+        )
+        print("Assigned counts per bits:", {b: result.target_counts[i] for i, b in enumerate(cfg.bits)})
+        print("First 10 layer -> bit:", [
+            (result.assignment.layer_names[i], cfg.bits[result.assignment.bit_indices[i]])
+            for i in range(min(10, len(result.assignment.layer_names)))
+        ])
 
-    # OT によるビット配分
-    cfg = OTQuantConfig(bits=[2,4,6,8], avg_bits=6.0, epsilon=0.02, sinkhorn_iters=400, sens_batches=1)
-    result = ot_allocate_bits_for_model(model, dl, loss_fn, device, cfg)
+        # …ここで評価/微調整など…
+        # 復元する場合:
+        # restore_weights_from_backup(model, backup)
 
-    # 量子化を適用
-    backup = apply_weight_quantization_inplace( model, result.assignment, cfg.bits, keep_original=True )
-    print("Assigned counts per bits:", {b: result.target_counts[i] for i, b in enumerate(cfg.bits)})
-    print("First 10 layer -> bit:", [
-        (result.assignment.layer_names[i], cfg.bits[result.assignment.bit_indices[i]])
-        for i in range(min(10, len(result.assignment.layer_names)))
-    ])
-
-    # …ここで評価/微調整など…
-    # 復元する場合:
-    if(restore_weights_from_backup):
-        restore_weights_from_backup(model, backup)
-
+    except Exception as e:
+        print("Demo failed (install torchvision for the example):", e)
