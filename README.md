@@ -6,12 +6,15 @@
   - SinkhornMCKPDynamic (MCKP (Chen et al. quadratic cost) + short QAT)
   - ILP(integer linear programming ) 
 # Usage
-> python eval_quant_methods.py --train_cifar10 --model resnet18 --train_epochs 2 --methods HAWQ2_fisher OT_HAWQ_like DiffSinkhornDynamic SinkhornMCKPDynamic --out_dir runs/cifar_res18
-
-> python eval_quant_methods.py --model resnet18 --imagenet_val /path/to/imagenet/val --methods HAWQ2_fisher OT_HAWQ_like --out_dir runs/imagenet_res18
-
-> python eval_quant_methods.py --train_cifar10 --bits 2 4 8 --avg_bits 4.5 --dynamic_steps 80
-
+```
+python eval_quant_methods.py --train_cifar10 --model resnet18 --train_epochs 2 --methods HAWQ2_fisher OT_HAWQ_like DiffSinkhornDynamic SinkhornMCKPDynamic --out_dir runs/cifar_res18
+```
+```
+python eval_quant_methods.py --model resnet18 --imagenet_val /path/to/imagenet/val --methods HAWQ2_fisher OT_HAWQ_like --out_dir runs/imagenet_res18
+```
+```
+python eval_quant_methods.py --train_cifar10 --bits 2 4 8 --avg_bits 4.5 --dynamic_steps 80
+```
 # comment
 - 重みのみ（per-tensor）量子化。精度を突き詰めるには activation 量子化や ACIQ/LSQ によるクリッピング推定、per-channel 量子化の追加を推奨。
 - OT_Fisher_Critical は DETR などでクリティカル目的を組むと効果が出ます（分類で未指定なら 2) と同等）。
