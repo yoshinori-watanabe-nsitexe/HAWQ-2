@@ -36,3 +36,4 @@ DETR系で使う 1対1対応 の割り当て（バイパーティトマッチン
 - [HAWQ-V3](https://arxiv.org/abs/2011.10680)
 - [Optimal transport](https://arxiv.org/abs/2412.15195)
 - [MCKP](https://arxiv.org/abs/2110.06554)
+- [Fisher-aware Quantization for DETR Detectors with Critical-category Objectives](https://arxiv.org/abs/2407.03442)
